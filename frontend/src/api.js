@@ -37,4 +37,6 @@ export const api = {
 
   leaderboard: (seasonId, metric = 'kda', limit = 20) =>
     get(`/leaderboard/${seasonId}?metric=${metric}&limit=${limit}`),
+
+  insertEvent: (body) => post('/telemetry', body),
 }

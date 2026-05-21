@@ -47,6 +47,12 @@ export default function Navbar() {
         >
           Jugadores
         </NavLink>
+        <NavLink
+          to="/queries"
+          className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}
+        >
+          Queries
+        </NavLink>
       </div>
       <button className="nav-seed-btn" onClick={handleSeed} disabled={seeding}>
         {seeding ? 'Cargando...' : '⟳ Seed DB'}

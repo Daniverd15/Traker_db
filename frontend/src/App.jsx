@@ -5,6 +5,7 @@ import Leaderboard from './pages/Leaderboard'
 import Matches from './pages/Matches'
 import MatchDetail from './pages/MatchDetail'
 import Players from './pages/Players'
+import Queries from './pages/Queries'
 
 export default function App() {
   return (
@@ -18,6 +19,7 @@ export default function App() {
             <Route path="/matches"       element={<Matches />} />
             <Route path="/matches/:id"   element={<MatchDetail />} />
             <Route path="/players"       element={<Players />} />
+            <Route path="/queries"       element={<Queries />} />
           </Routes>
         </main>
       </div>

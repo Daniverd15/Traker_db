@@ -135,6 +135,27 @@ def match_stats(match_id: str, request: Request):
     return result
 
 
+@router.get("/{match_id}/timeline-player")
+def player_timeline(match_id: str, player_id: str, request: Request,
+                    limit: int = Query(50, le=500)):
+    """Q3 — Eventos de un jugador en una partida, ordenados por tiempo."""
+    db = request.app.state.db
+    try:
+        m_oid = ObjectId(match_id)
+        p_oid = ObjectId(player_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="ID inválido")
+
+    events = list(
+        db["telemetry_events"].find(
+            {"match_id": m_oid, "actor_id": p_oid},
+            {"_id": 0, "round_number": 1, "event_time": 1,
+             "event_type": 1, "weapon": 1, "damage": 1, "headshot": 1},
+        ).sort("event_time", 1).limit(limit)
+    )
+    return serialize_doc(events)
+
+
 @router.get("/{match_id}/rounds-summary")
 def rounds_summary(match_id: str, request: Request):
     """Kills por ronda para toda la partida — alimenta el gráfico del timeline."""
