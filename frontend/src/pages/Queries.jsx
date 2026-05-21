@@ -9,6 +9,38 @@ const WEAPONS = ['Vandal','Phantom','Operator','Sheriff','Spectre','Odin','Guard
 const E_TYPES = ['kill','damage','ability','movement']
 const METRICS = ['kda','acs','kills','damage','headshot_pct']
 
+const ALLOWED_COLS = [
+  'players','teams','agents','matches',
+  'telemetry_events','player_match_stats','season_leaderboards',
+]
+
+const FREE_EXAMPLES = [
+  {
+    label:      'Todos los jugadores',
+    collection: 'players',
+    type:       'find',
+    json:       '{}',
+  },
+  {
+    label:      'Kills por arma',
+    collection: 'telemetry_events',
+    type:       'aggregate',
+    json:       '[{"$match":{"event_type":"kill"}},{"$group":{"_id":"$weapon","kills":{"$sum":1}}},{"$sort":{"kills":-1}}]',
+  },
+  {
+    label:      'Equipos por región',
+    collection: 'teams',
+    type:       'aggregate',
+    json:       '[{"$group":{"_id":"$region","count":{"$sum":1}}},{"$sort":{"count":-1}}]',
+  },
+  {
+    label:      'Top partidas recientes',
+    collection: 'matches',
+    type:       'find',
+    json:       '{}',
+  },
+]
+
 // ── Helpers de display ────────────────────────────────────────────────────────
 
 function CodeBlock({ code }) {
@@ -269,7 +301,10 @@ const BADGE_COLORS = {
   SELECT:  { bg: 'rgba(74,144,217,0.15)', color: '#4A90D9' },
   FILTER:  { bg: 'rgba(255,200,0,0.15)',  color: '#FFC800' },
   RANKING: { bg: 'rgba(255,70,85,0.15)',  color: '#FF4655' },
+  LIBRE:   { bg: 'rgba(160,90,255,0.15)', color: '#A05AFF' },
 }
+
+const LIBRE_TAB = 6
 
 export default function Queries() {
   const [matches,    setMatches]    = useState([])
@@ -281,19 +316,28 @@ export default function Queries() {
   const [loading,    setLoading]    = useState(false)
   const [execTime,   setExecTime]   = useState(null)
 
+  // Free-query state
+  const [freeCol,    setFreeCol]    = useState('players')
+  const [freeType,   setFreeType]   = useState('find')
+  const [freeJson,   setFreeJson]   = useState('{}')
+  const [freeLimit,  setFreeLimit]  = useState(20)
+  const [freeError,  setFreeError]  = useState(null)
+
   useEffect(() => {
     Promise.all([api.matches(null, null, 100), api.players()])
       .then(([m, p]) => { setMatches(m); setPlayers(p) })
   }, [])
 
   const queryDefs = useQueryDefs(matches, players)
-  const q = queryDefs[activeQ]
+  const isLibre = activeQ === LIBRE_TAB
+  const q = isLibre ? null : queryDefs[activeQ]
 
   function handleTab(i) {
     setActiveQ(i)
     setValues({})
     setResult(null)
     setError(null)
+    setFreeError(null)
     setExecTime(null)
   }
 
@@ -317,8 +361,41 @@ export default function Queries() {
     }
   }
 
-  // Inicializar defaults al cambiar query
+  async function handleFreeRun() {
+    setFreeError(null)
+    let parsed
+    try {
+      parsed = JSON.parse(freeJson)
+    } catch {
+      setFreeError('JSON inválido — revisa la sintaxis')
+      return
+    }
+    setLoading(true)
+    setResult(null)
+    setError(null)
+    const t0 = performance.now()
+    try {
+      const body = {
+        collection: freeCol,
+        type:       freeType,
+        limit:      Number(freeLimit) || 20,
+        ...(freeType === 'aggregate'
+          ? { pipeline: Array.isArray(parsed) ? parsed : [parsed] }
+          : { filter:   parsed }),
+      }
+      const res = await api.customQuery(body)
+      setResult(res.data)
+      setExecTime(Math.round(performance.now() - t0))
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Inicializar defaults al cambiar query (solo para Q1-Q6)
   useEffect(() => {
+    if (isLibre || !q) return
     const defaults = {}
     q.fields.forEach(f => {
       if (f.default !== undefined) defaults[f.key] = f.default
@@ -329,7 +406,25 @@ export default function Queries() {
     setValues(defaults)
   }, [activeQ])
 
-  const badgeStyle = BADGE_COLORS[q.badge] ?? {}
+  const badgeStyle = q ? (BADGE_COLORS[q.badge] ?? {}) : BADGE_COLORS.LIBRE
+
+  // Código que se enviará al backend (para mostrar en el panel libre)
+  const freeBodyPreview = (() => {
+    try {
+      const parsed = JSON.parse(freeJson)
+      const body = {
+        collection: freeCol,
+        type:       freeType,
+        limit:      Number(freeLimit) || 20,
+        ...(freeType === 'aggregate'
+          ? { pipeline: Array.isArray(parsed) ? parsed : [parsed] }
+          : { filter:   parsed }),
+      }
+      return JSON.stringify(body, null, 2)
+    } catch {
+      return '// JSON inválido'
+    }
+  })()
 
   return (
     <div>
@@ -364,110 +459,271 @@ export default function Queries() {
             </button>
           )
         })}
+
+        {/* Tab Libre */}
+        <button
+          onClick={() => handleTab(LIBRE_TAB)}
+          style={{
+            padding: '8px 16px',
+            borderRadius: 6,
+            border: `1px solid ${isLibre ? BADGE_COLORS.LIBRE.color : 'var(--border)'}`,
+            background: isLibre ? BADGE_COLORS.LIBRE.bg : 'var(--surface)',
+            color: isLibre ? BADGE_COLORS.LIBRE.color : 'var(--muted)',
+            cursor: 'pointer',
+            fontFamily: 'Rajdhani',
+            fontWeight: 700,
+            fontSize: 14,
+            letterSpacing: '0.03em',
+            transition: 'all 0.15s',
+          }}
+        >
+          ✦ Libre
+        </button>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, alignItems: 'start' }}>
+      {/* ── Panel Q1–Q6 ──────────────────────────────────────────── */}
+      {!isLibre && q && (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, alignItems: 'start' }}>
 
-        {/* ── Panel izquierdo: formulario ─────────────────────── */}
-        <div>
-          <div className="card" style={{ marginBottom: 16 }}>
+          {/* Formulario */}
+          <div>
+            <div className="card" style={{ marginBottom: 16 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+                <span style={{
+                  padding: '2px 10px', borderRadius: 4,
+                  background: badgeStyle.bg, color: badgeStyle.color,
+                  fontFamily: 'Rajdhani', fontWeight: 700, fontSize: 12,
+                  textTransform: 'uppercase', letterSpacing: '0.08em',
+                }}>
+                  {q.badge}
+                </span>
+                <span style={{ fontFamily: 'Rajdhani', fontWeight: 700, fontSize: 17 }}>
+                  {q.id} — {q.title}
+                </span>
+              </div>
+              <p style={{ color: 'var(--muted)', fontSize: 13, lineHeight: 1.5, marginBottom: 20 }}>
+                {q.desc}
+              </p>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                {q.fields.map(f => (
+                  <div key={f.key} className="filter-group">
+                    <label className="filter-label">{f.label}</label>
+
+                    {f.type === 'select' && (
+                      <select
+                        className="filter-select"
+                        value={values[f.key] ?? ''}
+                        onChange={e => handleChange(f.key, e.target.value)}
+                      >
+                        {f.opts?.map(o => (
+                          typeof o === 'string'
+                            ? <option key={o} value={o}>{o}</option>
+                            : <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                      </select>
+                    )}
+
+                    {f.type === 'number' && (
+                      <input
+                        className="filter-input"
+                        type="number"
+                        value={values[f.key] ?? f.default ?? ''}
+                        onChange={e => handleChange(f.key, e.target.value)}
+                        min={1}
+                      />
+                    )}
+
+                    {f.type === 'text' && (
+                      <input
+                        className="filter-input"
+                        type="text"
+                        value={values[f.key] ?? ''}
+                        onChange={e => handleChange(f.key, e.target.value)}
+                      />
+                    )}
+
+                    {f.type === 'checkbox' && (
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', marginTop: 4 }}>
+                        <input
+                          type="checkbox"
+                          checked={Boolean(values[f.key])}
+                          onChange={e => handleChange(f.key, e.target.checked)}
+                          style={{ width: 16, height: 16, accentColor: 'var(--red)' }}
+                        />
+                        <span style={{ color: 'var(--muted)', fontSize: 13 }}>
+                          {values[f.key] ? 'Sí' : 'No'}
+                        </span>
+                      </label>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              <button
+                className="filter-btn"
+                onClick={handleRun}
+                disabled={loading}
+                style={{ marginTop: 20, width: '100%', padding: '10px 0', fontSize: 15 }}
+              >
+                {loading ? 'Ejecutando...' : `▶  Ejecutar ${q.id}`}
+              </button>
+            </div>
+          </div>
+
+          {/* Código MongoDB */}
+          <div>
+            <div style={{ marginBottom: 8 }}>
+              <span style={{
+                fontFamily: 'Rajdhani', fontSize: 12, fontWeight: 600,
+                color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.08em',
+              }}>
+                Query MongoDB equivalente
+              </span>
+            </div>
+            <CodeBlock code={q.mongoCode(values)} />
+          </div>
+        </div>
+      )}
+
+      {/* ── Panel Query Libre ────────────────────────────────────── */}
+      {isLibre && (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, alignItems: 'start' }}>
+
+          {/* Formulario libre */}
+          <div className="card">
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
               <span style={{
                 padding: '2px 10px', borderRadius: 4,
-                background: badgeStyle.bg, color: badgeStyle.color,
+                background: BADGE_COLORS.LIBRE.bg, color: BADGE_COLORS.LIBRE.color,
                 fontFamily: 'Rajdhani', fontWeight: 700, fontSize: 12,
                 textTransform: 'uppercase', letterSpacing: '0.08em',
               }}>
-                {q.badge}
+                LIBRE
               </span>
               <span style={{ fontFamily: 'Rajdhani', fontWeight: 700, fontSize: 17 }}>
-                {q.id} — {q.title}
+                Query personalizada
               </span>
             </div>
             <p style={{ color: 'var(--muted)', fontSize: 13, lineHeight: 1.5, marginBottom: 20 }}>
-              {q.desc}
+              Escribe tu propia consulta MongoDB sobre cualquier colección permitida. Usa JSON puro.
             </p>
 
-            {/* Campos del formulario */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              {q.fields.map(f => (
-                <div key={f.key} className="filter-group">
-                  <label className="filter-label">{f.label}</label>
+            {/* Ejemplos rápidos */}
+            <div style={{ marginBottom: 16 }}>
+              <span style={{ fontSize: 12, color: 'var(--muted)', fontFamily: 'Rajdhani', fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+                Ejemplos
+              </span>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
+                {FREE_EXAMPLES.map(ex => (
+                  <button
+                    key={ex.label}
+                    onClick={() => { setFreeCol(ex.collection); setFreeType(ex.type); setFreeJson(ex.json); setFreeError(null) }}
+                    style={{
+                      padding: '4px 10px', borderRadius: 4, fontSize: 12,
+                      border: '1px solid var(--border)', background: 'var(--surface)',
+                      color: BADGE_COLORS.LIBRE.color, cursor: 'pointer',
+                      fontFamily: 'Rajdhani', fontWeight: 600,
+                    }}
+                  >
+                    {ex.label}
+                  </button>
+                ))}
+              </div>
+            </div>
 
-                  {f.type === 'select' && (
-                    <select
-                      className="filter-select"
-                      value={values[f.key] ?? ''}
-                      onChange={e => handleChange(f.key, e.target.value)}
-                    >
-                      {f.opts?.map(o => (
-                        typeof o === 'string'
-                          ? <option key={o} value={o}>{o}</option>
-                          : <option key={o.value} value={o.value}>{o.label}</option>
-                      ))}
-                    </select>
-                  )}
+            {/* Colección */}
+            <div className="filter-group" style={{ marginBottom: 12 }}>
+              <label className="filter-label">Colección</label>
+              <select className="filter-select" value={freeCol} onChange={e => setFreeCol(e.target.value)}>
+                {ALLOWED_COLS.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
 
-                  {f.type === 'number' && (
-                    <input
-                      className="filter-input"
-                      type="number"
-                      value={values[f.key] ?? f.default ?? ''}
-                      onChange={e => handleChange(f.key, e.target.value)}
-                      min={1}
-                    />
-                  )}
+            {/* Tipo */}
+            <div className="filter-group" style={{ marginBottom: 12 }}>
+              <label className="filter-label">Tipo</label>
+              <div style={{ display: 'flex', gap: 8 }}>
+                {['find', 'aggregate'].map(t => (
+                  <button
+                    key={t}
+                    onClick={() => setFreeType(t)}
+                    style={{
+                      padding: '6px 14px', borderRadius: 4, fontSize: 13,
+                      border: `1px solid ${freeType === t ? BADGE_COLORS.LIBRE.color : 'var(--border)'}`,
+                      background: freeType === t ? BADGE_COLORS.LIBRE.bg : 'var(--surface)',
+                      color: freeType === t ? BADGE_COLORS.LIBRE.color : 'var(--muted)',
+                      cursor: 'pointer', fontFamily: 'Rajdhani', fontWeight: 700,
+                    }}
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
+            </div>
 
-                  {f.type === 'text' && (
-                    <input
-                      className="filter-input"
-                      type="text"
-                      value={values[f.key] ?? ''}
-                      onChange={e => handleChange(f.key, e.target.value)}
-                    />
-                  )}
+            {/* JSON */}
+            <div className="filter-group" style={{ marginBottom: 12 }}>
+              <label className="filter-label">
+                {freeType === 'find' ? 'Filter (objeto JSON)' : 'Pipeline (array JSON)'}
+              </label>
+              <textarea
+                value={freeJson}
+                onChange={e => { setFreeJson(e.target.value); setFreeError(null) }}
+                spellCheck={false}
+                style={{
+                  width: '100%', minHeight: 120, padding: '10px 12px',
+                  background: '#0a1118', border: `1px solid ${freeError ? 'var(--red)' : 'var(--border)'}`,
+                  borderRadius: 6, color: '#a8d8a0',
+                  fontFamily: "'Fira Code', 'Courier New', monospace",
+                  fontSize: 12, lineHeight: 1.6, resize: 'vertical',
+                  outline: 'none', boxSizing: 'border-box',
+                }}
+              />
+              {freeError && (
+                <span style={{ fontSize: 12, color: 'var(--red)', marginTop: 4, display: 'block' }}>
+                  {freeError}
+                </span>
+              )}
+            </div>
 
-                  {f.type === 'checkbox' && (
-                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', marginTop: 4 }}>
-                      <input
-                        type="checkbox"
-                        checked={Boolean(values[f.key])}
-                        onChange={e => handleChange(f.key, e.target.checked)}
-                        style={{ width: 16, height: 16, accentColor: 'var(--red)' }}
-                      />
-                      <span style={{ color: 'var(--muted)', fontSize: 13 }}>
-                        {values[f.key] ? 'Sí' : 'No'}
-                      </span>
-                    </label>
-                  )}
-                </div>
-              ))}
+            {/* Límite */}
+            <div className="filter-group" style={{ marginBottom: 20 }}>
+              <label className="filter-label">Límite (máx. 200)</label>
+              <input
+                className="filter-input"
+                type="number"
+                value={freeLimit}
+                onChange={e => setFreeLimit(e.target.value)}
+                min={1}
+                max={200}
+              />
             </div>
 
             <button
               className="filter-btn"
-              onClick={handleRun}
+              onClick={handleFreeRun}
               disabled={loading}
-              style={{ marginTop: 20, width: '100%', padding: '10px 0', fontSize: 15 }}
+              style={{ width: '100%', padding: '10px 0', fontSize: 15 }}
             >
-              {loading ? 'Ejecutando...' : `▶  Ejecutar ${q.id}`}
+              {loading ? 'Ejecutando...' : '▶  Ejecutar query'}
             </button>
           </div>
-        </div>
 
-        {/* ── Panel derecho: código MongoDB ──────────────────────── */}
-        <div>
-          <div style={{ marginBottom: 8 }}>
-            <span style={{
-              fontFamily: 'Rajdhani', fontSize: 12, fontWeight: 600,
-              color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.08em',
-            }}>
-              Query MongoDB equivalente
-            </span>
+          {/* Payload enviado al backend */}
+          <div>
+            <div style={{ marginBottom: 8 }}>
+              <span style={{
+                fontFamily: 'Rajdhani', fontSize: 12, fontWeight: 600,
+                color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.08em',
+              }}>
+                POST /api/query — body
+              </span>
+            </div>
+            <CodeBlock code={freeBodyPreview} />
           </div>
-          <CodeBlock code={q.mongoCode(values)} />
         </div>
-      </div>
+      )}
 
       {/* ── Resultados ─────────────────────────────────────────────── */}
       {(result !== null || error) && (

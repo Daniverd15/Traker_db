@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from config.db import get_db
 from routers import players, matches, leaderboard, telemetry
 
@@ -43,6 +44,51 @@ def summary_stats(request: Request):
         "matches": db["matches"].count_documents({}),
         "teams":   db["teams"].count_documents({}),
         "events":  db["telemetry_events"].count_documents({}),
+    }
+
+
+ALLOWED_COLLECTIONS = {
+    "players", "teams", "agents", "matches",
+    "telemetry_events", "player_match_stats", "season_leaderboards",
+}
+
+class CustomQueryIn(BaseModel):
+    collection: str
+    type: str = "find"        # "find" | "aggregate"
+    filter: dict = {}
+    pipeline: list = []
+    projection: dict = {}
+    limit: int = 50
+
+
+@app.post("/api/query")
+def custom_query(body: CustomQueryIn, request: Request):
+    """Ejecuta una query personalizada (solo lectura) sobre cualquier colección."""
+    from utils.serializer import serialize_doc
+
+    if body.collection not in ALLOWED_COLLECTIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Colección '{body.collection}' no permitida. "
+                   f"Usa: {', '.join(sorted(ALLOWED_COLLECTIONS))}",
+        )
+
+    db  = request.app.state.db
+    col = db[body.collection]
+    limit = max(1, min(body.limit, 200))
+
+    try:
+        if body.type == "aggregate":
+            result = list(col.aggregate(body.pipeline))[:limit]
+        else:
+            cursor = col.find(body.filter, body.projection or None)
+            result = list(cursor.limit(limit))
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    return {
+        "count":  len(result),
+        "data":   serialize_doc(result),
     }
 
 
