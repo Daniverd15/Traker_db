@@ -9,37 +9,45 @@ const WEAPONS = ['Vandal','Phantom','Operator','Sheriff','Spectre','Odin','Guard
 const E_TYPES = ['kill','damage','ability','movement']
 const METRICS = ['kda','acs','kills','damage','headshot_pct']
 
-const ALLOWED_COLS = [
-  'players','teams','agents','matches',
-  'telemetry_events','player_match_stats','season_leaderboards',
-]
+// ── Parser de sintaxis MongoDB shell ─────────────────────────────────────────
 
-const FREE_EXAMPLES = [
-  {
-    label:      'Todos los jugadores',
-    collection: 'players',
-    type:       'find',
-    json:       '{}',
-  },
-  {
-    label:      'Kills por arma',
-    collection: 'telemetry_events',
-    type:       'aggregate',
-    json:       '[{"$match":{"event_type":"kill"}},{"$group":{"_id":"$weapon","kills":{"$sum":1}}},{"$sort":{"kills":-1}}]',
-  },
-  {
-    label:      'Equipos por región',
-    collection: 'teams',
-    type:       'aggregate',
-    json:       '[{"$group":{"_id":"$region","count":{"$sum":1}}},{"$sort":{"count":-1}}]',
-  },
-  {
-    label:      'Top partidas recientes',
-    collection: 'matches',
-    type:       'find',
-    json:       '{}',
-  },
-]
+function parseMongoShell(raw) {
+  const input = raw.trim().replace(/;\s*$/, '')
+
+  // Mock db object via Proxy — captures collection, method and args
+  let captured = null
+  const mockDb = new Proxy({}, {
+    get(_, collection) {
+      return new Proxy({}, {
+        get(_, method) {
+          return (...args) => {
+            captured = { collection, method, args, limit: 50 }
+            return { limit: (n) => { captured.limit = Number(n) } }
+          }
+        },
+      })
+    },
+  })
+
+  try {
+    // eslint-disable-next-line no-new-func
+    Function('db', '"use strict";\n' + input)(mockDb)
+  } catch (e) {
+    throw new Error('Error de sintaxis: ' + e.message)
+  }
+
+  if (!captured) throw new Error('No se detectó ninguna llamada a db.*')
+
+  const { collection, method, args, limit } = captured
+
+  if (method === 'find' || method === 'findOne') {
+    return { collection, type: 'find', filter: args[0] ?? {}, projection: args[1] ?? {}, limit: method === 'findOne' ? 1 : limit }
+  }
+  if (method === 'aggregate') {
+    return { collection, type: 'aggregate', pipeline: args[0] ?? [], limit }
+  }
+  throw new Error(`Método '${method}' no soportado. Usa find() o aggregate()`)
+}
 
 // ── Helpers de display ────────────────────────────────────────────────────────
 
@@ -316,11 +324,7 @@ export default function Queries() {
   const [loading,    setLoading]    = useState(false)
   const [execTime,   setExecTime]   = useState(null)
 
-  // Free-query state
-  const [freeCol,    setFreeCol]    = useState('players')
-  const [freeType,   setFreeType]   = useState('find')
-  const [freeJson,   setFreeJson]   = useState('{}')
-  const [freeLimit,  setFreeLimit]  = useState(20)
+  const [freeBody,   setFreeBody]   = useState('db.players.find({})')
   const [freeError,  setFreeError]  = useState(null)
 
   useEffect(() => {
@@ -340,6 +344,7 @@ export default function Queries() {
     setFreeError(null)
     setExecTime(null)
   }
+
 
   function handleChange(key, val) {
     setValues(prev => ({ ...prev, [key]: val }))
@@ -363,11 +368,11 @@ export default function Queries() {
 
   async function handleFreeRun() {
     setFreeError(null)
-    let parsed
+    let body
     try {
-      parsed = JSON.parse(freeJson)
-    } catch {
-      setFreeError('JSON inválido — revisa la sintaxis')
+      body = parseMongoShell(freeBody)
+    } catch (e) {
+      setFreeError(e.message)
       return
     }
     setLoading(true)
@@ -375,14 +380,6 @@ export default function Queries() {
     setError(null)
     const t0 = performance.now()
     try {
-      const body = {
-        collection: freeCol,
-        type:       freeType,
-        limit:      Number(freeLimit) || 20,
-        ...(freeType === 'aggregate'
-          ? { pipeline: Array.isArray(parsed) ? parsed : [parsed] }
-          : { filter:   parsed }),
-      }
       const res = await api.customQuery(body)
       setResult(res.data)
       setExecTime(Math.round(performance.now() - t0))
@@ -409,22 +406,6 @@ export default function Queries() {
   const badgeStyle = q ? (BADGE_COLORS[q.badge] ?? {}) : BADGE_COLORS.LIBRE
 
   // Código que se enviará al backend (para mostrar en el panel libre)
-  const freeBodyPreview = (() => {
-    try {
-      const parsed = JSON.parse(freeJson)
-      const body = {
-        collection: freeCol,
-        type:       freeType,
-        limit:      Number(freeLimit) || 20,
-        ...(freeType === 'aggregate'
-          ? { pipeline: Array.isArray(parsed) ? parsed : [parsed] }
-          : { filter:   parsed }),
-      }
-      return JSON.stringify(body, null, 2)
-    } catch {
-      return '// JSON inválido'
-    }
-  })()
 
   return (
     <div>
@@ -588,140 +569,35 @@ export default function Queries() {
 
       {/* ── Panel Query Libre ────────────────────────────────────── */}
       {isLibre && (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, alignItems: 'start' }}>
-
-          {/* Formulario libre */}
-          <div className="card">
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-              <span style={{
-                padding: '2px 10px', borderRadius: 4,
-                background: BADGE_COLORS.LIBRE.bg, color: BADGE_COLORS.LIBRE.color,
-                fontFamily: 'Rajdhani', fontWeight: 700, fontSize: 12,
-                textTransform: 'uppercase', letterSpacing: '0.08em',
-              }}>
-                LIBRE
-              </span>
-              <span style={{ fontFamily: 'Rajdhani', fontWeight: 700, fontSize: 17 }}>
-                Query personalizada
-              </span>
-            </div>
-            <p style={{ color: 'var(--muted)', fontSize: 13, lineHeight: 1.5, marginBottom: 20 }}>
-              Escribe tu propia consulta MongoDB sobre cualquier colección permitida. Usa JSON puro.
-            </p>
-
-            {/* Ejemplos rápidos */}
-            <div style={{ marginBottom: 16 }}>
-              <span style={{ fontSize: 12, color: 'var(--muted)', fontFamily: 'Rajdhani', fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
-                Ejemplos
-              </span>
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
-                {FREE_EXAMPLES.map(ex => (
-                  <button
-                    key={ex.label}
-                    onClick={() => { setFreeCol(ex.collection); setFreeType(ex.type); setFreeJson(ex.json); setFreeError(null) }}
-                    style={{
-                      padding: '4px 10px', borderRadius: 4, fontSize: 12,
-                      border: '1px solid var(--border)', background: 'var(--surface)',
-                      color: BADGE_COLORS.LIBRE.color, cursor: 'pointer',
-                      fontFamily: 'Rajdhani', fontWeight: 600,
-                    }}
-                  >
-                    {ex.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Colección */}
-            <div className="filter-group" style={{ marginBottom: 12 }}>
-              <label className="filter-label">Colección</label>
-              <select className="filter-select" value={freeCol} onChange={e => setFreeCol(e.target.value)}>
-                {ALLOWED_COLS.map(c => <option key={c} value={c}>{c}</option>)}
-              </select>
-            </div>
-
-            {/* Tipo */}
-            <div className="filter-group" style={{ marginBottom: 12 }}>
-              <label className="filter-label">Tipo</label>
-              <div style={{ display: 'flex', gap: 8 }}>
-                {['find', 'aggregate'].map(t => (
-                  <button
-                    key={t}
-                    onClick={() => setFreeType(t)}
-                    style={{
-                      padding: '6px 14px', borderRadius: 4, fontSize: 13,
-                      border: `1px solid ${freeType === t ? BADGE_COLORS.LIBRE.color : 'var(--border)'}`,
-                      background: freeType === t ? BADGE_COLORS.LIBRE.bg : 'var(--surface)',
-                      color: freeType === t ? BADGE_COLORS.LIBRE.color : 'var(--muted)',
-                      cursor: 'pointer', fontFamily: 'Rajdhani', fontWeight: 700,
-                    }}
-                  >
-                    {t}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* JSON */}
-            <div className="filter-group" style={{ marginBottom: 12 }}>
-              <label className="filter-label">
-                {freeType === 'find' ? 'Filter (objeto JSON)' : 'Pipeline (array JSON)'}
-              </label>
-              <textarea
-                value={freeJson}
-                onChange={e => { setFreeJson(e.target.value); setFreeError(null) }}
-                spellCheck={false}
-                style={{
-                  width: '100%', minHeight: 120, padding: '10px 12px',
-                  background: '#0a1118', border: `1px solid ${freeError ? 'var(--red)' : 'var(--border)'}`,
-                  borderRadius: 6, color: '#a8d8a0',
-                  fontFamily: "'Fira Code', 'Courier New', monospace",
-                  fontSize: 12, lineHeight: 1.6, resize: 'vertical',
-                  outline: 'none', boxSizing: 'border-box',
-                }}
-              />
-              {freeError && (
-                <span style={{ fontSize: 12, color: 'var(--red)', marginTop: 4, display: 'block' }}>
-                  {freeError}
-                </span>
-              )}
-            </div>
-
-            {/* Límite */}
-            <div className="filter-group" style={{ marginBottom: 20 }}>
-              <label className="filter-label">Límite (máx. 200)</label>
-              <input
-                className="filter-input"
-                type="number"
-                value={freeLimit}
-                onChange={e => setFreeLimit(e.target.value)}
-                min={1}
-                max={200}
-              />
-            </div>
-
-            <button
-              className="filter-btn"
-              onClick={handleFreeRun}
-              disabled={loading}
-              style={{ width: '100%', padding: '10px 0', fontSize: 15 }}
-            >
-              {loading ? 'Ejecutando...' : '▶  Ejecutar query'}
-            </button>
-          </div>
-
-          {/* Payload enviado al backend */}
-          <div>
-            <div style={{ marginBottom: 8 }}>
-              <span style={{
-                fontFamily: 'Rajdhani', fontSize: 12, fontWeight: 600,
-                color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.08em',
-              }}>
-                POST /api/query — body
-              </span>
-            </div>
-            <CodeBlock code={freeBodyPreview} />
-          </div>
+        <div className="card">
+          <p style={{ color: 'var(--muted)', fontSize: 13, marginBottom: 16 }}>
+            Escribe tu query en sintaxis MongoDB shell. Soporta <code style={{ color: BADGE_COLORS.LIBRE.color }}>find()</code>, <code style={{ color: BADGE_COLORS.LIBRE.color }}>findOne()</code> y <code style={{ color: BADGE_COLORS.LIBRE.color }}>aggregate()</code>, y encadenado <code style={{ color: BADGE_COLORS.LIBRE.color }}>.limit(N)</code>.
+          </p>
+          <textarea
+            value={freeBody}
+            onChange={e => { setFreeBody(e.target.value); setFreeError(null) }}
+            spellCheck={false}
+            style={{
+              width: '100%', minHeight: 260, padding: '14px 16px',
+              background: '#0a1118',
+              border: `1px solid ${freeError ? 'var(--red)' : 'var(--border)'}`,
+              borderRadius: 6, color: '#a8d8a0',
+              fontFamily: "'Fira Code', 'Courier New', monospace",
+              fontSize: 13, lineHeight: 1.7, resize: 'vertical',
+              outline: 'none', boxSizing: 'border-box',
+            }}
+          />
+          {freeError && (
+            <p style={{ color: 'var(--red)', fontSize: 12, margin: '6px 0 0' }}>{freeError}</p>
+          )}
+          <button
+            className="filter-btn"
+            onClick={handleFreeRun}
+            disabled={loading}
+            style={{ marginTop: 16, padding: '10px 32px', fontSize: 15 }}
+          >
+            {loading ? 'Ejecutando...' : '▶  Ejecutar'}
+          </button>
         </div>
       )}
 
